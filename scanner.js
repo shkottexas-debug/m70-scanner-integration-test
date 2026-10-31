@@ -37,6 +37,11 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
     elements.result.className = type;
   }
 
+  function showConnectionStatus(message, type = '') {
+    elements.connectionStatus.textContent = message;
+    elements.connectionStatus.className = `connection-status${type ? ` ${type}` : ''}`;
+  }
+
   function errorMessage(error, fallback) {
     if (error && typeof error.message === 'string' && error.message.trim()) return error.message.trim();
     if (typeof error === 'string' && error.trim()) return error.trim();
@@ -63,9 +68,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
     if (bridgeExpiryTimer) clearTimeout(bridgeExpiryTimer);
     bridgeExpiryTimer = null;
     setMode();
-    if (!currentRequest) {
-      showResult('Сессия регистратора истекла. Ожидаем безопасное продление…', 'warning');
-    }
+    showConnectionStatus('Сессия регистратора истекла. Ожидаем безопасное продление…', 'warning');
   }
 
   function postToBridge(message) {
@@ -133,7 +136,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
       // Недоверенное окно не должно сбрасывать уже проверенную сессию.
       if (!isBridgeActive()) {
         setMode();
-        showResult('Не удалось подтвердить подлинность приложения регистратора.', 'error');
+        showConnectionStatus('Не удалось подтвердить подлинность приложения регистратора.', 'error');
       }
       return;
     }
@@ -148,7 +151,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
     bridgeExpiryTimer = setTimeout(expireBridgeSession, Math.max(0, bridgeExpiresAt - Date.now()));
     setMode();
     postToBridge({ type: 'M70_SCANNER_CONNECTED', channelId: bridgeChannelId });
-    showResult('Связь с приложением регистратора установлена.', 'success');
+    showConnectionStatus('Связь с приложением регистратора установлена.', 'success');
     pumpQueue();
   }
 
@@ -168,7 +171,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
         clearTimeout(currentRequest.timeoutId);
         currentRequest = null;
         elements.testBtn.disabled = false;
-        showResult(
+        showConnectionStatus(
           data.ok ? '✓ Связь с Google Apps Script работает. Регистратор авторизован.' : `Ошибка проверки связи: ${data.message || 'сервер недоступен'}`,
           data.ok ? 'success' : 'error'
         );
@@ -191,6 +194,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
     tokenLastSeenAt.set(token, now);
     if (scannedTokens.has(token)) {
       const state = tokenStates.get(token);
+      if (state === 'checked_in') showResult('Билет уже отмечен в этой сессии', 'warning');
       if (state === 'already_used') showResult('Билет уже использован', 'warning');
       if (state === 'failed' && now - previousSeenAt >= RESCAN_GAP_MS) retryFailedToken(token);
       return;
@@ -359,15 +363,15 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   }
 
   function testConnection() {
-    if (!isBridgeActive()) return showResult('Нет активной авторизованной связи. Откройте сканер кнопкой из приложения регистратора Apps Script.', 'error');
-    if (currentRequest) return showResult('Дождитесь завершения текущей проверки билета.', 'warning');
+    if (!isBridgeActive()) return showConnectionStatus('Нет активной авторизованной связи. Откройте сканер кнопкой из приложения регистратора Apps Script.', 'error');
+    if (currentRequest) return showConnectionStatus('Дождитесь завершения текущей проверки билета.', 'warning');
     const requestId = createRequestId();
     elements.testBtn.disabled = true;
     const timeoutId = setTimeout(function () {
       if (!currentRequest || currentRequest.requestId !== requestId) return;
       currentRequest = null;
       elements.testBtn.disabled = false;
-      showResult('Google Apps Script не ответил. Проверьте сеть и авторизацию.', 'error');
+      showConnectionStatus('Google Apps Script не ответил. Проверьте сеть и авторизацию.', 'error');
       pumpQueue();
     }, REQUEST_TIMEOUT_MS);
     currentRequest = { kind: 'test', requestId, timeoutId };
@@ -375,12 +379,12 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
       clearTimeout(timeoutId);
       currentRequest = null;
       elements.testBtn.disabled = false;
-      showResult('Связь с приложением регистратора потеряна.', 'error');
+      showConnectionStatus('Связь с приложением регистратора потеряна.', 'error');
     }
   }
 
   function init() {
-    ['result', 'mode', 'count', 'confirmedCount', 'startBtn', 'stopBtn', 'testBtn', 'retryBtn', 'photoInput']
+    ['result', 'connectionStatus', 'mode', 'count', 'confirmedCount', 'startBtn', 'stopBtn', 'testBtn', 'retryBtn', 'photoInput']
       .forEach(function (id) { elements[id] = document.getElementById(id); });
     elements.startBtn.addEventListener('click', function () { startScanner(); });
     elements.stopBtn.addEventListener('click', function () { stopScanner(); });
