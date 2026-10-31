@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="referrer" content="strict-origin-when-cross-origin">
+  <meta name="robots" content="noindex,nofollow">
+  <title>М70 — Интеграционный тест сканера</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js" defer></script>
+  <script src="scanner.js" defer></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: Arial, sans-serif; background: #f3f4f6; margin: 0; padding: 18px; color: #222; }
+    .container { max-width: 460px; margin: auto; background: white; padding: 22px; border-radius: 14px; box-shadow: 0 8px 28px rgb(15 23 42 / 8%); }
+    h1 { margin: 0 0 5px; }
+    p { color: #566070; }
+    button, .file-button { display: block; width: 100%; padding: 15px; margin-top: 12px; border: none; border-radius: 9px; background: #222; color: white; font: inherit; font-size: 16px; text-align: center; cursor: pointer; }
+    button.secondary, .file-button.secondary { background: #475569; }
+    button:disabled { opacity: .5; cursor: not-allowed; }
+    input[type="file"] { display: none; }
+    #reader { width: 100%; margin-top: 16px; overflow: hidden; border-radius: 10px; }
+    #result { margin-top: 16px; padding: 15px; border-radius: 8px; background: #edf2f7; white-space: pre-line; min-height: 52px; }
+    #result.success { background: #d9f5df; }
+    #result.warning { background: #fff4cc; }
+    #result.error { background: #ffdddd; }
+    .counters { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; text-align: center; }
+    .counter { padding: 10px; border-radius: 8px; background: #f8fafc; }
+    .counter strong { display: block; font-size: 22px; }
+    #mode { font-size: 14px; font-weight: 700; }
+    .test-banner { padding: 10px; border-radius: 8px; background: #fff4cc; font-weight: 700; }
+  </style>
+</head>
+<body>
+  <main class="container">
+    <div class="test-banner">ТЕСТОВЫЙ КОНТУР · НЕ ДЛЯ РЕАЛЬНЫХ БИЛЕТОВ</div>
+    <h1>М70 · Сканер</h1>
+    <p>Кооператив М70 · Томск</p>
+    <p id="mode">Определение режима…</p>
+    <button id="startBtn" type="button">📷 Начать сканирование</button>
+    <button id="stopBtn" type="button" class="secondary" disabled>Остановить камеру</button>
+    <label for="photoInput" class="file-button secondary">Выбрать фотографию QR</label>
+    <input id="photoInput" type="file" accept="image/*" capture="environment">
+    <button id="testBtn" type="button" class="secondary">Проверить связь с Google Apps Script</button>
+    <button id="retryBtn" type="button" class="secondary" hidden>Повторить отправку</button>
+    <div id="reader"></div>
+    <div id="result" role="status" aria-live="polite">Камера выключена</div>
+    <div class="counters">
+      <div class="counter">Распознано<strong id="count">0</strong></div>
+      <div class="counter">Подтверждено<strong id="confirmedCount">0</strong></div>
+    </div>
+    <p>В тестовом режиме QR только распознаются. Для отметки прихода откройте сканер кнопкой из авторизованного приложения регистратора.</p>
+  </main>
+</body>
+</html>
