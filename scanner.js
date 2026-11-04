@@ -2,7 +2,6 @@
   'use strict';
 
   const REQUEST_TIMEOUT_MS = 15000;
-  const RESCAN_GAP_MS = 1500;
   const BRIDGE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvkAkoJI3L+Xa8yAMyYSe
 c441cGIEj0HC+bHEJNXXN57+TMGA0um4VhKkD77Hkq9SDvDwgsBgC6Ucf3Jg2WyD
@@ -24,10 +23,10 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   let currentRequest = null;
   let retryToken = null;
   let confirmedCount = 0;
+  let networkOnline = navigator.onLine !== false;
   const scannedTokens = new Set();
   const tokenStates = new Map();
   const tokenRequestIds = new Map();
-  const tokenLastSeenAt = new Map();
   const pendingTokens = [];
   const elements = {};
   let importedBridgeKey = null;
@@ -72,6 +71,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   }
 
   function postToBridge(message) {
+    if (!networkOnline) return false;
     if (!isBridgeActive()) {
       if (bridgeConnected) expireBridgeSession();
       return false;
@@ -189,24 +189,30 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   function onScanSuccess(decodedText) {
     const token = typeof decodedText === 'string' ? decodedText.trim() : '';
     if (!token) return showResult('QR-код пуст или повреждён.', 'error');
-    const now = Date.now();
-    const previousSeenAt = tokenLastSeenAt.get(token) || 0;
-    tokenLastSeenAt.set(token, now);
     if (scannedTokens.has(token)) {
       const state = tokenStates.get(token);
       if (state === 'checked_in') showResult('Билет уже отмечен в этой сессии', 'warning');
       if (state === 'already_used') showResult('Билет уже использован', 'warning');
-      if (state === 'failed' && now - previousSeenAt >= RESCAN_GAP_MS) retryFailedToken(token);
+      if (state === 'failed') {
+        showResult('Билет ожидает ручного повтора. Нажмите «Повторить отправку».', 'warning');
+      }
       return;
     }
 
     scannedTokens.add(token);
-    tokenStates.set(token, isBridgeActive() ? 'queued' : 'test_only');
+    tokenStates.set(token, isBridgeActive() ? (networkOnline ? 'queued' : 'failed') : 'test_only');
     updateRecognizedCount();
     if (navigator.vibrate) navigator.vibrate(100);
 
     if (!isBridgeActive()) {
       showResult(`✓ Новый QR-код распознан\nУникальных QR: ${scannedTokens.size}\nТестовый режим: отметка прихода не отправлена.`, 'success');
+      return;
+    }
+    if (!networkOnline) {
+      tokenRequestIds.set(token, createRequestId());
+      retryToken = token;
+      elements.retryBtn.hidden = false;
+      showResult('Нет сети. Приход не подтверждён. После восстановления связи повторите проверку вручную.', 'error');
       return;
     }
     pendingTokens.push(token);
@@ -215,7 +221,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   }
 
   function pumpQueue() {
-    if (!isBridgeActive() || currentRequest || pendingTokens.length === 0) return;
+    if (!networkOnline || !isBridgeActive() || currentRequest || pendingTokens.length === 0) return;
     const token = pendingTokens.shift();
     const requestId = tokenRequestIds.get(token) || createRequestId();
     tokenRequestIds.set(token, requestId);
@@ -240,10 +246,16 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   }
 
   function handleCheckInResult(data) {
-    if (!currentRequest || currentRequest.kind !== 'checkin' || data.requestId !== currentRequest.requestId) return;
-    const token = currentRequest.token;
-    clearTimeout(currentRequest.timeoutId);
-    currentRequest = null;
+    const activeRequest = currentRequest && currentRequest.kind === 'checkin' &&
+      data.requestId === currentRequest.requestId ? currentRequest : null;
+    const token = activeRequest ? activeRequest.token : findRetryableTokenByRequestId_(data.requestId);
+    if (!token) return;
+    if (activeRequest) {
+      clearTimeout(activeRequest.timeoutId);
+      currentRequest = null;
+    } else {
+      removePendingToken_(token);
+    }
     if (data.status === 'checked_in') {
       tokenStates.set(token, 'checked_in');
       tokenRequestIds.delete(token);
@@ -270,11 +282,29 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
       elements.retryBtn.hidden = false;
       showResult(`Ошибка: ${data.message || 'приход не подтверждён'}`, 'error');
     }
-    if (tokenStates.get(token) !== 'failed') pumpQueue();
+    if (activeRequest && tokenStates.get(token) !== 'failed') pumpQueue();
+  }
+
+  function findRetryableTokenByRequestId_(requestId) {
+    for (const entry of tokenRequestIds.entries()) {
+      const state = tokenStates.get(entry[0]);
+      if (entry[1] === requestId && (state === 'failed' || state === 'queued')) return entry[0];
+    }
+    return null;
+  }
+
+  function removePendingToken_(token) {
+    for (let index = pendingTokens.length - 1; index >= 0; index -= 1) {
+      if (pendingTokens[index] === token) pendingTokens.splice(index, 1);
+    }
   }
 
   function retryFailedToken(token = retryToken) {
     if (!token || tokenStates.get(token) !== 'failed') return;
+    if (!networkOnline) {
+      showResult('Нет сети. Приход не подтверждён. Повторите проверку после восстановления связи.', 'error');
+      return;
+    }
     if (!isBridgeActive()) {
       showResult('Сессия регистратора недоступна. Дождитесь безопасного переподключения.', 'error');
       return;
@@ -285,6 +315,45 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
     elements.retryBtn.hidden = true;
     showResult('Повторная проверка билета…');
     pumpQueue();
+  }
+
+  function failCurrentRequestOffline_() {
+    if (!currentRequest) return;
+    const request = currentRequest;
+    clearTimeout(request.timeoutId);
+    currentRequest = null;
+    if (request.kind === 'checkin') {
+      tokenStates.set(request.token, 'failed');
+      retryToken = request.token;
+      elements.retryBtn.hidden = false;
+      showResult('Соединение потеряно. Приход не подтверждён. После восстановления сети повторите проверку вручную.', 'error');
+    } else {
+      elements.testBtn.disabled = false;
+    }
+  }
+
+  function failQueuedTokensOffline_() {
+    while (pendingTokens.length > 0) {
+      const token = pendingTokens.shift();
+      if (tokenStates.get(token) !== 'queued') continue;
+      tokenStates.set(token, 'failed');
+      if (!tokenRequestIds.has(token)) tokenRequestIds.set(token, createRequestId());
+      if (!retryToken) retryToken = token;
+      elements.retryBtn.hidden = false;
+    }
+  }
+
+  function handleOffline() {
+    networkOnline = false;
+    showConnectionStatus('Нет сети. Ожидающие проверки остановлены.', 'warning');
+    failCurrentRequestOffline_();
+    failQueuedTokensOffline_();
+  }
+
+  function handleOnline() {
+    networkOnline = true;
+    showConnectionStatus('Сеть восстановлена. Проверьте связь или повторите отправку вручную.', 'success');
+    // Не вызываем pumpQueue(): восстановление сети никогда не отправляет билет автоматически.
   }
 
   function qrBoxSize(width, height) {
@@ -363,6 +432,7 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   }
 
   function testConnection() {
+    if (!networkOnline) return showConnectionStatus('Нет сети. Проверка авторизации недоступна.', 'error');
     if (!isBridgeActive()) return showConnectionStatus('Нет активной авторизованной связи. Откройте сканер кнопкой из приложения регистратора Apps Script.', 'error');
     if (currentRequest) return showConnectionStatus('Дождитесь завершения текущей проверки билета.', 'warning');
     const requestId = createRequestId();
@@ -392,6 +462,8 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
     elements.retryBtn.addEventListener('click', function () { retryFailedToken(); });
     elements.photoInput.addEventListener('change', scanPhoto);
     window.addEventListener('message', onBridgeMessage);
+    window.addEventListener('offline', handleOffline);
+    window.addEventListener('online', handleOnline);
     window.addEventListener('pagehide', function () {
       if (scanner && running) scanner.stop().catch(function () {});
     });
