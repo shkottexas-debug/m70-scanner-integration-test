@@ -39,6 +39,7 @@ function createHarness() {
   const postedMessages = [];
   const timers = new Map();
   let timerId = 0;
+  let requestSequence = 0;
   let now = 1_800_000_000_000;
   const bridgeWindow = {
     closed: false,
@@ -52,7 +53,7 @@ function createHarness() {
       origin: 'https://shkottexas-debug.github.io'
     },
     crypto: {
-      randomUUID: () => 'request-12345678',
+      randomUUID: () => `request-${String(++requestSequence).padStart(8, '0')}`,
       subtle: {
         importKey: async () => ({}),
         verify: async () => true
@@ -206,7 +207,7 @@ test('renewal after successful check-in preserves ticket result and confirmed co
   );
 });
 
-test('offline releases an in-flight request and online does not resend automatically', async () => {
+test('QR remaining in frame after reconnect cannot resend until registrar clicks retry', async () => {
   const harness = createHarness();
   await connectBridge(harness);
 
@@ -221,14 +222,20 @@ test('offline releases an in-flight request and online does not resend automatic
   harness.setOnline(true);
   assert.equal(checkInRequests(harness).length, 1, 'online event must not resend a ticket');
 
-  harness.advance(1_500);
-  harness.window.__M70_TEST__.onScanSuccess('offline-in-flight-token');
+  for (let index = 0; index < 3; index += 1) {
+    harness.advance(2_000);
+    harness.window.__M70_TEST__.onScanSuccess('offline-in-flight-token');
+  }
+  assert.equal(checkInRequests(harness).length, 1, 'decode callbacks for a QR still in frame must not resend');
+  assert.equal(harness.elements.result.textContent, 'Билет ожидает ручного повтора. Нажмите «Повторить отправку».');
+
+  harness.elements.retryBtn.dispatch('click');
   const requests = checkInRequests(harness);
   assert.equal(requests.length, 2);
   assert.equal(requests[1].message.requestId, firstRequest.message.requestId, 'manual retry reuses requestId');
 });
 
-test('15 second timeout releases request and rescan safely retries with the same requestId', async () => {
+test('15 second timeout releases request and manual retry reuses the same requestId', async () => {
   const harness = createHarness();
   const { bridgeOrigin, channelId } = await connectBridge(harness);
 
@@ -239,8 +246,7 @@ test('15 second timeout releases request and rescan safely retries with the same
   assert.equal(harness.elements.retryBtn.hidden, false);
   assert.match(harness.elements.result.textContent, /Сервер не ответил/);
 
-  harness.advance(1_500);
-  harness.window.__M70_TEST__.onScanSuccess('timeout-token');
+  harness.elements.retryBtn.dispatch('click');
   const retryRequest = checkInRequests(harness)[1];
   assert.equal(retryRequest.message.requestId, firstRequest.message.requestId);
 
@@ -304,7 +310,7 @@ test('late response with an unknown requestId cannot confirm a ticket', async ()
   assert.equal(harness.elements.result.textContent, 'Камера выключена');
 });
 
-test('ticket scanned while offline waits for manual rescan and authorization can be checked after reconnect', async () => {
+test('ticket scanned while offline waits for manual action and authorization can be checked after reconnect', async () => {
   const harness = createHarness();
   await connectBridge(harness);
 
@@ -321,6 +327,51 @@ test('ticket scanned while offline waits for manual rescan and authorization can
     1,
     'authorization check is available without reloading the page'
   );
+});
+
+test('late checked_in removes a queued retry before it can be sent and counts once', async () => {
+  const harness = createHarness();
+  const { bridgeOrigin, channelId } = await connectBridge(harness);
+
+  harness.window.__M70_TEST__.onScanSuccess('queued-late-result-token');
+  const originalRequest = checkInRequests(harness)[0];
+  harness.setOnline(false);
+  harness.setOnline(true);
+
+  harness.elements.testBtn.dispatch('click');
+  const testRequest = harness.postedMessages.find(entry => entry.message.type === 'M70_TEST_REQUEST');
+  assert.ok(testRequest, 'connection test occupies the single in-flight request slot');
+
+  harness.elements.retryBtn.dispatch('click');
+  assert.equal(checkInRequests(harness).length, 1, 'retry is queued but not sent while another request is active');
+
+  const lateResult = {
+    origin: bridgeOrigin,
+    source: harness.bridgeWindow,
+    data: {
+      type: 'M70_CHECKIN_RESULT',
+      channelId,
+      requestId: originalRequest.message.requestId,
+      status: 'checked_in'
+    }
+  };
+  harness.windowListeners.message(lateResult);
+  assert.equal(harness.elements.confirmedCount.textContent, '1');
+
+  harness.windowListeners.message({
+    origin: bridgeOrigin,
+    source: harness.bridgeWindow,
+    data: {
+      type: 'M70_TEST_RESULT',
+      channelId,
+      requestId: testRequest.message.requestId,
+      ok: true
+    }
+  });
+  assert.equal(checkInRequests(harness).length, 1, 'completed queued token must not be sent after queue resumes');
+
+  harness.windowListeners.message(lateResult);
+  assert.equal(harness.elements.confirmedCount.textContent, '1', 'duplicate late result must not increment twice');
 });
 
 test('server busy response leaves the ticket retryable with the original requestId', async () => {
@@ -342,8 +393,7 @@ test('server busy response leaves the ticket retryable with the original request
   });
 
   assert.equal(harness.elements.retryBtn.hidden, false);
-  harness.advance(1_500);
-  harness.window.__M70_TEST__.onScanSuccess('server-busy-token');
+  harness.elements.retryBtn.dispatch('click');
   const retryRequest = checkInRequests(harness)[1];
   assert.equal(retryRequest.message.requestId, firstRequest.message.requestId);
 });

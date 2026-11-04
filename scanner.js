@@ -2,7 +2,6 @@
   'use strict';
 
   const REQUEST_TIMEOUT_MS = 15000;
-  const RESCAN_GAP_MS = 1500;
   const BRIDGE_PUBLIC_KEY_PEM = `-----BEGIN PUBLIC KEY-----
 MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAvkAkoJI3L+Xa8yAMyYSe
 c441cGIEj0HC+bHEJNXXN57+TMGA0um4VhKkD77Hkq9SDvDwgsBgC6Ucf3Jg2WyD
@@ -28,7 +27,6 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   const scannedTokens = new Set();
   const tokenStates = new Map();
   const tokenRequestIds = new Map();
-  const tokenLastSeenAt = new Map();
   const pendingTokens = [];
   const elements = {};
   let importedBridgeKey = null;
@@ -191,14 +189,13 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   function onScanSuccess(decodedText) {
     const token = typeof decodedText === 'string' ? decodedText.trim() : '';
     if (!token) return showResult('QR-код пуст или повреждён.', 'error');
-    const now = Date.now();
-    const previousSeenAt = tokenLastSeenAt.get(token) || 0;
-    tokenLastSeenAt.set(token, now);
     if (scannedTokens.has(token)) {
       const state = tokenStates.get(token);
       if (state === 'checked_in') showResult('Билет уже отмечен в этой сессии', 'warning');
       if (state === 'already_used') showResult('Билет уже использован', 'warning');
-      if (state === 'failed' && now - previousSeenAt >= RESCAN_GAP_MS) retryFailedToken(token);
+      if (state === 'failed') {
+        showResult('Билет ожидает ручного повтора. Нажмите «Повторить отправку».', 'warning');
+      }
       return;
     }
 
@@ -251,11 +248,13 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
   function handleCheckInResult(data) {
     const activeRequest = currentRequest && currentRequest.kind === 'checkin' &&
       data.requestId === currentRequest.requestId ? currentRequest : null;
-    const token = activeRequest ? activeRequest.token : findFailedTokenByRequestId_(data.requestId);
+    const token = activeRequest ? activeRequest.token : findRetryableTokenByRequestId_(data.requestId);
     if (!token) return;
     if (activeRequest) {
       clearTimeout(activeRequest.timeoutId);
       currentRequest = null;
+    } else {
+      removePendingToken_(token);
     }
     if (data.status === 'checked_in') {
       tokenStates.set(token, 'checked_in');
@@ -286,11 +285,18 @@ dneyNyf2YdHpnA1JtronTUxwqHmqDG0QwlZtx1JNmF3jPeftvZgt+Ff3c9oj+oyi
     if (activeRequest && tokenStates.get(token) !== 'failed') pumpQueue();
   }
 
-  function findFailedTokenByRequestId_(requestId) {
+  function findRetryableTokenByRequestId_(requestId) {
     for (const entry of tokenRequestIds.entries()) {
-      if (entry[1] === requestId && tokenStates.get(entry[0]) === 'failed') return entry[0];
+      const state = tokenStates.get(entry[0]);
+      if (entry[1] === requestId && (state === 'failed' || state === 'queued')) return entry[0];
     }
     return null;
+  }
+
+  function removePendingToken_(token) {
+    for (let index = pendingTokens.length - 1; index >= 0; index -= 1) {
+      if (pendingTokens[index] === token) pendingTokens.splice(index, 1);
+    }
   }
 
   function retryFailedToken(token = retryToken) {
